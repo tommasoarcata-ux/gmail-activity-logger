@@ -1,0 +1,277 @@
+
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gmail Activity Logger</title>
+  <script src="https://accounts.google.com/gsi/client" async></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 22px;
+      background: #10131b;
+      color: #f1f5f9;
+      font-family: -apple-system, sans-serif;
+    }
+    main { max-width: 760px; margin: auto; }
+    h1 { font-size: 26px; }
+    p { color: #b8c2d1; }
+    button {
+      padding: 12px 16px;
+      margin: 5px 5px 12px 0;
+      border: 0;
+      border-radius: 10px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .primary { background: #8bb8ff; color: #10131b; }
+    .secondary { background: #292f3c; color: white; }
+    .panel {
+      background: #1a1f2b;
+      border: 1px solid #343b4b;
+      border-radius: 12px;
+      padding: 15px;
+      margin: 12px 0;
+      overflow-wrap: anywhere;
+    }
+    .muted { color: #9ba8ba; font-size: 13px; }
+    #status { white-space: pre-wrap; }
+    .email { border-top: 1px solid #343b4b; padding: 12px 0; }
+    .email:first-child { border-top: 0; }
+    strong { color: #fff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Gmail Activity Logger</h1>
+  <p>Visualizza i metadati delle email del tuo account Google.</p>
+
+  <div class="panel">
+    <button class="primary" id="connect">Collega Gmail</button>
+    <button class="secondary" id="refresh" disabled>
+      Aggiorna email
+    </button>
+    <button class="secondary" id="disconnect">
+      Disconnetti
+    </button>
+    <p id="status">Non collegato.</p>
+    <p class="muted">
+      Permessi richiesti: metadati Gmail. Il programma non legge
+      il corpo delle email e non salva il token di accesso.
+    </p>
+  </div>
+
+  <h2>Email recenti</h2>
+  <div class="panel" id="emails">Collega il tuo account per iniziare.</div>
+
+  <h2>Registro locale</h2>
+  <p class="muted">
+    Registra le consultazioni effettuate da questa pagina su questo dispositivo.
+  </p>
+  <button class="secondary" id="clearLog">Cancella registro</button>
+  <div class="panel" id="log"></div>
+</main>
+
+<script>
+(() => {
+  const CLIENT_ID = "INCOLLA_QUI_IL_CLIENT_ID";
+  const SCOPE = "https://www.googleapis.com/auth/gmail.metadata";
+
+  let tokenClient = null;
+  let accessToken = null;
+
+  const status = document.getElementById("status");
+  const emails = document.getElementById("emails");
+  const refreshButton = document.getElementById("refresh");
+  const connectButton = document.getElementById("connect");
+
+  function setStatus(message) {
+    status.textContent = message;
+  }
+
+  function getLog() {
+    try {
+      return JSON.parse(localStorage.getItem("gmailLoggerLog") || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  function addLog(message) {
+    const entries = getLog();
+    entries.unshift({
+      time: new Date().toLocaleString("it-IT"),
+      message
+    });
+    localStorage.setItem("gmailLoggerLog", JSON.stringify(entries.slice(0, 100)));
+    renderLog();
+  }
+
+  function renderLog() {
+    const container = document.getElementById("log");
+    container.replaceChildren();
+    const entries = getLog();
+
+    if (!entries.length) {
+      container.textContent = "Nessuna attività registrata.";
+      return;
+    }
+
+    entries.forEach(entry => {
+      const item = document.createElement("div");
+      item.className = "email";
+      const time = document.createElement("strong");
+      time.textContent = entry.time;
+      const detail = document.createElement("p");
+      detail.textContent = entry.message;
+      item.append(time, detail);
+      container.appendChild(item);
+    });
+  }
+
+  function showError(message) {
+    setStatus(message);
+    addLog("Errore: " + message);
+  }
+
+  async function gmailRequest(path) {
+    const response = await fetch(
+      "https://gmail.googleapis.com/gmail/v1/users/me/" + path,
+      { headers: { Authorization: "Bearer " + accessToken } }
+    );
+
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const data = await response.json();
+        detail = data.error?.message || "";
+      } catch {}
+      throw new Error(detail || "Richiesta Gmail non riuscita (" +
+        response.status + ").");
+    }
+    return response.json();
+  }
+
+  async function loadEmails() {
+    if (!accessToken) {
+      setStatus("Collega prima il tuo account Google.");
+      return;
+    }
+
+    refreshButton.disabled = true;
+    setStatus("Caricamento dei metadati…");
+    emails.textContent = "Caricamento…";
+
+    try {
+      const list = await gmailRequest("messages?maxResults=20");
+      const messages = list.messages || [];
+      emails.replaceChildren();
+
+      if (!messages.length) {
+        emails.textContent = "Nessuna email trovata.";
+      }
+
+      for (const message of messages) {
+        const data = await gmailRequest(
+          "messages/" + encodeURIComponent(message.id) +
+          "?format=metadata&metadataHeaders=From&metadataHeaders=To" +
+          "&metadataHeaders=Subject&metadataHeaders=Date"
+        );
+
+        const headers = data.payload?.headers || [];
+        const getHeader = name =>
+          headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value
+          || "Non disponibile";
+
+        const item = document.createElement("div");
+        item.className = "email";
+
+        const subject = document.createElement("strong");
+        subject.textContent = getHeader("Subject");
+
+        const details = document.createElement("p");
+        details.textContent =
+          "Da: " + getHeader("From") + "\n" +
+          "A: " + getHeader("To") + "\n" +
+          "Data: " + getHeader("Date");
+
+        details.style.whiteSpace = "pre-wrap";
+        item.append(subject, details);
+        emails.appendChild(item);
+      }
+
+      setStatus("Aggiornamento completato: " + messages.length + " email.");
+      addLog("Consultati i metadati di " + messages.length + " email.");
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      refreshButton.disabled = !accessToken;
+    }
+  }
+
+  function initializeGoogle() {
+    if (typeof google === "undefined" || !google.accounts?.oauth2) {
+      setStatus("Google Sign-In non è ancora pronto. Riprova tra poco.");
+      return false;
+    }
+
+    if (CLIENT_ID === "INCOLLA_QUI_IL_CLIENT_ID" ||
+        !CLIENT_ID.endsWith(".apps.googleusercontent.com")) {
+      setStatus("Prima inserisci il tuo Client ID OAuth nel codice.");
+      return false;
+    }
+
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPE,
+      callback: async (response) => {
+        if (response.error || !response.access_token) {
+          showError("Autorizzazione Google non completata.");
+          return;
+        }
+
+        accessToken = response.access_token;
+        refreshButton.disabled = false;
+        connectButton.textContent = "Ricollega Gmail";
+        setStatus("Account autorizzato. Caricamento…");
+        addLog("Connessione Google autorizzata.");
+        await loadEmails();
+      },
+      error_callback: () => {
+        showError("Finestra di autorizzazione chiusa o non disponibile.");
+      }
+    });
+
+    return true;
+  }
+
+  connectButton.addEventListener("click", () => {
+    if (!initializeGoogle()) return;
+    tokenClient.requestAccessToken();
+  });
+
+  refreshButton.addEventListener("click", loadEmails);
+
+  document.getElementById("disconnect").addEventListener("click", () => {
+    if (accessToken && window.google?.accounts?.oauth2) {
+      google.accounts.oauth2.revoke(accessToken, () => {});
+    }
+    accessToken = null;
+    refreshButton.disabled = true;
+    connectButton.textContent = "Collega Gmail";
+    emails.textContent = "Account disconnesso.";
+    setStatus("Disconnesso.");
+    addLog("Disconnessione richiesta.");
+  });
+
+  document.getElementById("clearLog").addEventListener("click", () => {
+    localStorage.removeItem("gmailLoggerLog");
+    renderLog();
+  });
+
+  renderLog();
+})();
+</script>
+</body>
+</html>
